@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>XIAO Tennis Analytics Pro</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#007bff">
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+            text-align: center; 
+            margin: 0; 
+            padding: 10px; 
+            background: #eef2f5; 
+            color: #222;
+        }
+        h1 { font-size: 20px; margin: 10px 0 5px 0; }
+        #status { font-size: 13px; color: #555; margin-bottom: 12px; }
+        
+        .btn-container { display: flex; justify-content: center; gap: 8px; margin-bottom: 15px; }
+        button { 
+            flex: 1;
+            max-width: 180px;
+            padding: 12px 10px; 
+            font-size: 14px; 
+            font-weight: bold; 
+            cursor: pointer; 
+            background: #007bff; 
+            color: white; 
+            border: none; 
+            border-radius: 10px; 
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        button:disabled { background: #ccc; box-shadow: none; }
+        .reset-btn { background: #6c757d; }
+
+        /* スマホ向け2列グリッド */
+        .grid-container { 
+            display: grid; 
+            grid-template-columns: repeat(2, 1fr); 
+            gap: 10px; 
+            max-width: 800px; 
+            margin: 0 auto 15px auto; 
+        }
+        .card { 
+            background: white; 
+            padding: 12px 8px; 
+            border-radius: 12px; 
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05); 
+            text-align: center; 
+        }
+        .card-title { font-size: 11px; color: #666; font-weight: bold; text-transform: uppercase; }
+        .card-main { font-size: 28px; font-weight: bold; color: #111; margin: 4px 0; }
+        .card-sub { 
+            font-size: 11px; 
+            color: #666; 
+            display: flex; 
+            justify-content: space-around; 
+            border-top: 1px solid #f0f0f0; 
+            margin-top: 6px; 
+            padding-top: 5px; 
+        }
+        
+        .speed-color { color: #ff3e3e; }
+        .spin-color { color: #28a745; }
+        .dist-color { color: #17a2b8; }
+        .net-color { color: #fd7e14; }
+
+        .judgement { font-weight: bold; padding: 2px 6px; border-radius: 4px; color: white; font-size: 10px; }
+        .in-court { background-color: #28a745; }
+        .out-court { background-color: #dc3545; }
+
+        .chart-container { 
+            max-width: 800px; 
+            margin: 0 auto; 
+            background: white; 
+            padding: 10px; 
+            border-radius: 12px; 
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05); 
+            position: relative;
+            height: 220px;
+        }
+        canvas { width: 100% !important; height: 100% !important; }
+    </style>
+</head>
+<body>
+
+    <!-- 🔒 パスワード保護 ＆ PWA設定 -->
+    <script>
+        const SECRET_PASS = "tennis2026"; // 🔑 設定パスワード
+        let userPass = sessionStorage.getItem("app_auth");
+
+        if (userPass !== SECRET_PASS) {
+            userPass = prompt("【限定アクセス】パスワードを入力してください:");
+            if (userPass === SECRET_PASS) {
+                sessionStorage.setItem("app_auth", userPass);
+            } else {
+                alert("パスワードが違います。アクセスできません。");
+                document.body.innerHTML = "<div style='margin-top:100px;'><h2>🔒 パスワード保護されています</h2><p>正しいパスワードを入力して再読み込みしてください。</p></div>";
+                window.stop();
+            }
+        }
+
+        // Service Worker（オフライン化機能）登録
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('./sw.js');
+        }
+    </script>
+
+    <h1>🎾 XIAO Tennis Pro</h1>
+    <p id="status">ステータス: 未接続</p>
+    
+    <div class="btn-container">
+        <button id="connectBtn">BLE 接続開始</button>
+        <button id="resetBtn" class="reset-btn">リセット</button>
+    </div>
+
+    <div class="grid-container">
+        <div class="card">
+            <div class="card-title">ヘッドスピード (km/h)</div>
+            <div class="card-main speed-color" id="speedVal">0.0</div>
+            <div class="card-sub">
+                <span>MAX: <b id="speedMax">0.0</b></span>
+                <span>AVE: <b id="speedAve">0.0</b></span>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">スピン量 (rpm)</div>
+            <div class="card-main spin-color" id="spinVal">0</div>
+            <div class="card-sub">
+                <span>MAX: <b id="spinMax">0</b></span>
+                <span>AVE: <b id="spinAve">0</b></span>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">推定飛距離 (m)</div>
+            <div class="card-main dist-color" id="distVal">0.0</div>
+            <div class="card-sub">
+                <span>判定: <span id="courtJudge" class="judgement in-court">-</span></span>
+                <span>打球: <b id="shotCount">0</b></span>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">ネット通過高 (cm)</div>
+            <div class="card-main net-color" id="netVal">0</div>
+            <div class="card-sub">
+                <span>ネット高: <b>91.4cm</b></span>
+            </div>
+        </div>
+    </div>
+
+    <div class="chart-container">
+        <canvas id="analyticsChart"></canvas>
+    </div>
+
+    <script>
+        const SERVICE_UUID = '19b10000-e8f2-537e-4f6c-d104768a1214';
+        const CHARACTERISTIC_UUID = '19b10001-e8f2-537e-4f6c-d104768a1214';
+
+        const connectBtn = document.getElementById('connectBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const statusText = document.getElementById('status');
+
+        const speedValEl = document.getElementById('speedVal');
+        const speedMaxEl = document.getElementById('speedMax');
+        const speedAveEl = document.getElementById('speedAve');
+
+        const spinValEl = document.getElementById('spinVal');
+        const spinMaxEl = document.getElementById('spinMax');
+        const spinAveEl = document.getElementById('spinAve');
+
+        const distValEl = document.getElementById('distVal');
+        const netValEl = document.getElementById('netVal');
+        const courtJudgeEl = document.getElementById('courtJudge');
+        const shotCountEl = document.getElementById('shotCount');
+
+        const RACQUET_LENGTH = 0.65;
+        const SWING_THRESHOLD = 12.0;
+
+        let shotHistory = { speeds: [], spins: [] };
+        let isSwinging = false;
+        let currentSwingPeak = { speed: 0, spin: 0 };
+
+        const ctx = document.getElementById('analyticsChart').getContext('2d');
+        const maxDataPoints = 60;
+        const analyticsChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: Array(maxDataPoints).fill(''),
+                datasets: [
+                    { label: 'Speed (km/h)', borderColor: '#ff3e3e', data: [], fill: false, pointRadius: 0, borderWidth: 2, yAxisID: 'ySpeed' },
+                    { label: 'Spin (rpm)', borderColor: '#28a745', data: [], fill: false, pointRadius: 0, borderWidth: 2, yAxisID: 'ySpin' }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                scales: {
+                    ySpeed: { type: 'linear', position: 'left', min: 0, max: 160, ticks: { font: { size: 9 } } },
+                    ySpin:  { type: 'linear', position: 'right', min: 0, max: 3500, grid: { drawOnChartArea: false }, ticks: { font: { size: 9 } } }
+                },
+                plugins: {
+                    legend: { labels: { boxWidth: 12, font: { size: 10 } } }
+                }
+            }
+        });
+
+        resetBtn.addEventListener('click', () => {
+            shotHistory = { speeds: [], spins: [] };
+            speedMaxEl.innerText = '0.0';
+            speedAveEl.innerText = '0.0';
+            spinMaxEl.innerText = '0';
+            spinAveEl.innerText = '0';
+            shotCountEl.innerText = '0';
+            distValEl.innerText = '0.0';
+            netValEl.innerText = '0';
+            courtJudgeEl.innerText = '-';
+            courtJudgeEl.className = 'judgement in-court';
+        });
+
+        connectBtn.addEventListener('click', async () => {
+            try {
+                statusText.innerText = "デバイス検索中...";
+                const device = await navigator.bluetooth.requestDevice({
+                    acceptAllDevices: true,
+                    optionalServices: [SERVICE_UUID]
+                });
+
+                statusText.innerText = "接続中...";
+                const server = await device.gatt.connect();
+                const service = await server.getPrimaryService(SERVICE_UUID);
+                const characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+                await characteristic.startNotifications();
+                characteristic.addEventListener('characteristicvaluechanged', handleData);
+
+                statusText.innerText = "ステータス: 接続完了（計測中）";
+                connectBtn.disabled = true;
+            } catch (error) {
+                console.error(error);
+                statusText.innerText = "エラー: " + error.message;
+            }
+        });
+
+        function handleData(event) {
+            const value = event.target.value;
+            const floats = new Float32Array(value.buffer);
+
+            const ax = floats[0], ay = floats[1], az = floats[2];
+            const gx = floats[3], gy = floats[4], gz = floats[5];
+
+            // 1. ヘッドスピード（km/h）計算
+            const gyroTotalDeg = Math.sqrt(gx * gx + gy * gy + gz * gz);
+            const gyroSpeedKmh = (RACQUET_LENGTH * (gyroTotalDeg * Math.PI / 180.0)) * 3.6;
+            const speedKmh = gyroSpeedKmh * 1.15;
+
+            // 2. 擦り上げ（スピン）推測計算
+            const mainSpinDps = Math.max(Math.abs(gx), Math.abs(gy), Math.abs(gz));
+            let spinRpm = 0;
+
+            if (speedKmh > 10.0) {
+                const speedComponent = speedKmh * 22.0; 
+                const spinRatio = (mainSpinDps / 2000.0);
+                spinRpm = speedComponent * (0.6 + spinRatio * 0.7);
+            } else {
+                spinRpm = (mainSpinDps / 6.0) * 2.8;
+            }
+
+            // 画面表示更新
+            speedValEl.innerText = speedKmh.toFixed(1);
+            spinValEl.innerText = Math.round(spinRpm);
+
+            // スイング判定＆ピーク検出
+            if (speedKmh > SWING_THRESHOLD) {
+                isSwinging = true;
+                if (speedKmh > currentSwingPeak.speed) {
+                    currentSwingPeak.speed = speedKmh;
+                }
+                if (spinRpm > currentSwingPeak.spin) {
+                    currentSwingPeak.spin = spinRpm;
+                }
+            } else if (isSwinging && speedKmh < SWING_THRESHOLD * 0.6) {
+                if (currentSwingPeak.speed > 0) {
+                    processImpact(currentSwingPeak.speed, currentSwingPeak.spin);
+                }
+                isSwinging = false;
+                currentSwingPeak = { speed: 0, spin: 0 };
+            }
+
+            // グラフデータ追加
+            analyticsChart.data.datasets[0].data.push(speedKmh);
+            analyticsChart.data.datasets[1].data.push(spinRpm);
+
+            analyticsChart.data.datasets.forEach(ds => {
+                if (ds.data.length > maxDataPoints) ds.data.shift();
+            });
+            analyticsChart.update();
+        }
+
+        function processImpact(headSpeed, spinRpm) {
+            shotHistory.speeds.push(headSpeed);
+            shotHistory.spins.push(spinRpm);
+
+            const maxSpeed = Math.max(...shotHistory.speeds);
+            const aveSpeed = shotHistory.speeds.reduce((a,b)=>a+b,0) / shotHistory.speeds.length;
+            const maxSpin = Math.max(...shotHistory.spins);
+            const aveSpin = shotHistory.spins.reduce((a,b)=>a+b,0) / shotHistory.spins.length;
+
+            speedMaxEl.innerText = maxSpeed.toFixed(1);
+            speedAveEl.innerText = aveSpeed.toFixed(1);
+            spinMaxEl.innerText = Math.round(maxSpin);
+            spinAveEl.innerText = Math.round(aveSpin);
+            shotCountEl.innerText = shotHistory.speeds.length;
+
+            // 3D物理演算
+            const ballSpeedMps = (headSpeed * 1.35) / 3.6;
+            const launchAngleRad = 11.0 * (Math.PI / 180.0);
+            const g = 9.81;
+            const magnusAcc = (spinRpm / 1000.0) * 2.2; 
+
+            let vx = ballSpeedMps * Math.cos(launchAngleRad);
+            let vy = ballSpeedMps * Math.sin(launchAngleRad);
+            let x = 0, y = 1.0, dt = 0.01;
+            let netClearanceCm = 0, netPassed = false;
+
+            while (y > 0 && x < 35) {
+                x += vx * dt;
+                y += vy * dt;
+                vy -= (g + magnusAcc) * dt;
+                vx -= (0.005 * vx * vx) * dt;
+
+                if (!netPassed && x >= 11.89) {
+                    netClearanceCm = (y - 0.914) * 100;
+                    netPassed = true;
+                }
+            }
+
+            distValEl.innerText = x.toFixed(1);
+            netValEl.innerText = Math.max(0, netClearanceCm).toFixed(0);
+
+            if (netClearanceCm > 0 && x <= 23.77) {
+                courtJudgeEl.innerText = "IN";
+                courtJudgeEl.className = "judgement in-court";
+            } else {
+                courtJudgeEl.innerText = "OUT";
+                courtJudgeEl.className = "judgement out-court";
+            }
+        }
+    </script>
+</body>
+</html>
