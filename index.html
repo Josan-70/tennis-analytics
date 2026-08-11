@@ -25,13 +25,21 @@
         .card { background: white; padding: 15px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.06); text-align: center; }
         .card-title { font-size: 13px; color: #666; font-weight: bold; text-transform: uppercase; }
         .card-main { font-size: 32px; font-weight: bold; color: #111; margin: 5px 0; }
-        .card-sub { font-size: 13px; color: #777; display: flex; justify-content: space-around; border-top: 1px solid #eee; margin-top: 8px; padding-top: 6px; }
+        .card-sub { font-size: 12px; color: #777; display: flex; justify-content: space-around; border-top: 1px solid #eee; margin-top: 8px; padding-top: 6px; }
         
         .speed-color { color: #ff3e3e; }
         .spin-color { color: #28a745; }
         .dist-color { color: #17a2b8; }
         .net-color { color: #fd7e14; }
         .battery-color { color: #007bff; }
+
+        /* 種目バッジスタイル */
+        .stroke-badge { display: inline-block; padding: 3px 10px; border-radius: 6px; font-weight: bold; color: white; font-size: 14px; margin-top: 4px; }
+        .type-serve { background-color: #9c27b0; }
+        .type-smash { background-color: #e91e63; }
+        .type-forehand { background-color: #ff9800; }
+        .type-backhand { background-color: #2196f3; }
+        .type-unknown { background-color: #777; }
 
         .judgement { font-weight: bold; padding: 2px 8px; border-radius: 4px; color: white; font-size: 12px; }
         .in-court { background-color: #28a745; }
@@ -78,24 +86,18 @@
     </div>
 
     <div class="grid-container">
-        <!-- 🔋 バッテリー残量カード -->
+        <!-- 🎯 ショット判定 ＆ ヘッドスピード -->
         <div class="card">
-            <div class="card-title">バッテリー残量</div>
-            <div class="card-main battery-color"><span id="batteryVal">--</span><span style="font-size: 20px;">%</span></div>
-            <div class="card-sub">
-                <span>状態: <b id="batteryStatus">未接続</b></span>
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="card-title">ヘッドスピード (km/h)</div>
-            <div class="card-main speed-color" id="speedVal">0.0</div>
+            <div class="card-title">種目 ＆ ヘッドスピード</div>
+            <div><span id="strokeTypeBadge" class="stroke-badge type-unknown">--</span></div>
+            <div class="card-main speed-color"><span id="speedVal">0.0</span><span style="font-size: 16px;"> km/h</span></div>
             <div class="card-sub">
                 <span>MAX: <b id="speedMax">0.0</b></span>
                 <span>AVE: <b id="speedAve">0.0</b></span>
             </div>
         </div>
 
+        <!-- 🌀 スピン量 -->
         <div class="card">
             <div class="card-title">スピン量 (rpm)</div>
             <div class="card-main spin-color" id="spinVal">0</div>
@@ -105,21 +107,34 @@
             </div>
         </div>
 
+        <!-- 📏 飛距離 ＆ 種目内訳 -->
         <div class="card">
-            <div class="card-title">推定飛距離 (m)</div>
-            <div class="card-main dist-color" id="distVal">0.0</div>
-            <div class="card-sub">
-                <span>判定: <span id="courtJudge" class="judgement in-court">-</span></span>
-                <span>打球数: <b id="shotCount">0</b></span>
+            <div class="card-title">推定飛距離 ＆ 内訳</div>
+            <div class="card-main dist-color"><span id="distVal">0.0</span><span style="font-size: 16px;"> m</span></div>
+            <div class="card-sub" style="flex-direction: column; gap: 3px;">
+                <div>判定: <span id="courtJudge" class="judgement in-court">-</span> | 計 <b id="shotCount">0</b> 打</div>
+                <div style="font-size:11px; color:#555;">
+                    F:<b id="cntFore">0</b> B:<b id="cntBack">0</b> S:<b id="cntServe">0</b> Sm:<b id="cntSmash">0</b>
+                </div>
             </div>
         </div>
 
+        <!-- 🕸️ ネットクリアランス -->
         <div class="card">
             <div class="card-title">ネット上通過高さ (cm)</div>
             <div class="card-main net-color" id="netVal">0</div>
             <div class="card-sub">
                 <span>ネット高: <b>91.4 cm</b></span>
                 <span>クリアランス</span>
+            </div>
+        </div>
+
+        <!-- 🔋 バッテリー残量 -->
+        <div class="card">
+            <div class="card-title">バッテリー残量</div>
+            <div class="card-main battery-color"><span id="batteryVal">--</span><span style="font-size: 20px;">%</span></div>
+            <div class="card-sub">
+                <span>状態: <b id="batteryStatus">未接続</b></span>
             </div>
         </div>
     </div>
@@ -145,6 +160,7 @@
         const chartTitle = document.getElementById('chartTitle');
         const recDot = document.getElementById('recDot');
 
+        const strokeTypeBadge = document.getElementById('strokeTypeBadge');
         const batteryValEl = document.getElementById('batteryVal');
         const batteryStatusEl = document.getElementById('batteryStatus');
         const speedValEl = document.getElementById('speedVal');
@@ -158,22 +174,29 @@
         const courtJudgeEl = document.getElementById('courtJudge');
         const shotCountEl = document.getElementById('shotCount');
 
+        const cntForeEl = document.getElementById('cntFore');
+        const cntBackEl = document.getElementById('cntBack');
+        const cntServeEl = document.getElementById('cntServe');
+        const cntSmashEl = document.getElementById('cntSmash');
+
         const RACQUET_LENGTH = 0.65;
         const SWING_THRESHOLD = 12.0;
 
         let shotHistory = { speeds: [], spins: [] };
+        let strokeCounts = { FOREHAND: 0, BACKHAND: 0, SERVE: 0, SMASH: 0 };
+
         let isSwinging = false;
-        let currentSwingPeak = { speed: 0, spin: 0 };
+        let currentSwingPeak = { speed: 0, spin: 0, ax: 0, ay: 0, az: 0, gx: 0, gy: 0, gz: 0 };
 
         // ⏱️ ログ記録用変数
         let isRecording = false;
         let recStartTime = null;
-        let recordedShots = []; // 打撃ログ配列 [{timeStr, elapsedSec, speed, spin, dist}]
+        let recordedShots = []; 
 
         // 📊 Chart.js 設定
         const ctx = document.getElementById('analyticsChart').getContext('2d');
         const maxDataPoints = 60;
-        let isHistoryView = false; // ログ表示中フラグ
+        let isHistoryView = false;
 
         const analyticsChart = new Chart(ctx, {
             type: 'line',
@@ -197,7 +220,6 @@
         // 🔴 記録開始 / 終了ボタンの処理
         recBtn.addEventListener('click', () => {
             if (!isRecording) {
-                // --- 記録開始 ---
                 isRecording = true;
                 recStartTime = new Date();
                 recordedShots = [];
@@ -208,10 +230,8 @@
                 recDot.style.display = "inline-block";
                 chartTitle.innerText = "プレイログ記録中...";
 
-                // グラフをリアルタイムモードにセット
                 switchToRealtimeGraph();
             } else {
-                // --- 記録終了 ---
                 isRecording = false;
                 recBtn.innerText = "▶ 記録開始";
                 recBtn.className = "btn-rec-start";
@@ -220,20 +240,20 @@
 
                 if (recordedShots.length > 0) {
                     exportBtn.style.display = "inline-block";
-                    renderHistoryGraph(); // プレイ中の時間軸グラフを描画
+                    renderHistoryGraph();
                 } else {
                     alert("記録中に打撃が検出されませんでした。");
                 }
             }
         });
 
-        // 📥 CSV出力処理
+        // 📥 CSV出力処理（種目列を追加）
         exportBtn.addEventListener('click', () => {
             if (recordedShots.length === 0) return;
 
-            let csvContent = "data:text/csv;charset=utf-8,No,経過時間,刻刻,ヘッドスピード(km/h),スピン量(rpm),推定飛距離(m)\n";
+            let csvContent = "data:text/csv;charset=utf-8,No,経過時間,刻刻,種別,ヘッドスピード(km/h),スピン量(rpm),推定飛距離(m)\n";
             recordedShots.forEach((s, idx) => {
-                csvContent += `${idx + 1},${s.elapsedStr},${s.timeStr},${s.speed},${s.spin},${s.dist}\n`;
+                csvContent += `${idx + 1},${s.elapsedStr},${s.timeStr},${s.type},${s.speed},${s.spin},${s.dist}\n`;
             });
 
             const encodedUri = encodeURI(csvContent);
@@ -247,7 +267,9 @@
 
         resetBtn.addEventListener('click', () => {
             shotHistory = { speeds: [], spins: [] };
+            strokeCounts = { FOREHAND: 0, BACKHAND: 0, SERVE: 0, SMASH: 0 };
             recordedShots = [];
+            
             speedMaxEl.innerText = '0.0';
             speedAveEl.innerText = '0.0';
             spinMaxEl.innerText = '0';
@@ -257,6 +279,15 @@
             netValEl.innerText = '0';
             courtJudgeEl.innerText = '-';
             courtJudgeEl.className = 'judgement in-court';
+            
+            cntForeEl.innerText = '0';
+            cntBackEl.innerText = '0';
+            cntServeEl.innerText = '0';
+            cntSmashEl.innerText = '0';
+            
+            strokeTypeBadge.innerText = '--';
+            strokeTypeBadge.className = 'stroke-badge type-unknown';
+
             exportBtn.style.display = "none";
             switchToRealtimeGraph();
         });
@@ -302,7 +333,7 @@
 
                 statusText.innerText = "ステータス: 接続完了（テニス計測中）";
                 connectBtn.disabled = true;
-                recBtn.disabled = false; // 接続成功で記録ボタン有効化
+                recBtn.disabled = false;
             } catch (error) {
                 console.error("BLE Error:", error);
                 let errMsg = error && error.message ? error.message : String(error);
@@ -319,6 +350,7 @@
             const value = event.target.value;
             const floats = new Float32Array(value.buffer);
 
+            const ax = floats[0], ay = floats[1], az = floats[2];
             const gx = floats[3], gy = floats[4], gz = floats[5];
 
             // 1. ヘッドスピード（km/h）計算
@@ -326,7 +358,7 @@
             const gyroSpeedKmh = (RACQUET_LENGTH * (gyroTotalDeg * Math.PI / 180.0)) * 3.6;
             const speedKmh = gyroSpeedKmh * 1.15;
 
-            // 2. 擦り上げ（スピン）の回転数推測計算
+            // 2. スピン量計算
             const mainSpinDps = Math.max(Math.abs(gx), Math.abs(gy), Math.abs(gz));
             let spinRpm = 0;
 
@@ -342,24 +374,21 @@
             speedValEl.innerText = speedKmh.toFixed(1);
             spinValEl.innerText = Math.round(spinRpm);
 
-            // 🎯 スイング判定＆ピーク検出
+            // 🎯 スイング判定 ＆ ピーク検出（IMUセンサー値も記録）
             if (speedKmh > SWING_THRESHOLD) {
                 isSwinging = true;
                 if (speedKmh > currentSwingPeak.speed) {
-                    currentSwingPeak.speed = speedKmh;
-                }
-                if (spinRpm > currentSwingPeak.spin) {
-                    currentSwingPeak.spin = spinRpm;
+                    currentSwingPeak = { speed: speedKmh, spin: spinRpm, ax, ay, az, gx, gy, gz };
                 }
             } else if (isSwinging && speedKmh < SWING_THRESHOLD * 0.6) {
                 if (currentSwingPeak.speed > 0) {
-                    processImpact(currentSwingPeak.speed, currentSwingPeak.spin);
+                    processImpact(currentSwingPeak);
                 }
                 isSwinging = false;
-                currentSwingPeak = { speed: 0, spin: 0 };
+                currentSwingPeak = { speed: 0, spin: 0, ax: 0, ay: 0, az: 0, gx: 0, gy: 0, gz: 0 };
             }
 
-            // リアルタイム表示時のみリアルタイムグラフを更新
+            // リアルタイムグラフの更新
             if (!isHistoryView) {
                 analyticsChart.data.datasets[0].data.push(speedKmh);
                 analyticsChart.data.datasets[1].data.push(spinRpm);
@@ -371,7 +400,47 @@
             }
         }
 
-        function processImpact(headSpeed, spinRpm) {
+        // 🎾 ショット種目の自動判定アルゴリズム
+        function detectStrokeType(peak) {
+            // 頭上打点判定（頭の上にラケットを掲げると重力加速度 az または ay が反転）
+            const isOverhead = (peak.az < -0.3 || peak.ay > 0.6);
+
+            if (isOverhead) {
+                // スピードとスピンの勢いでサーブとスマッシュを振り分け
+                if (peak.speed > 55.0) {
+                    return { code: "SERVE", label: "サーブ 🎾", class: "type-serve" };
+                } else {
+                    return { code: "SMASH", label: "スマッシュ 💥", class: "type-smash" };
+                }
+            } else {
+                // 身体の回転・旋回方向（gz）でフォア/バックを判定
+                if (peak.gz >= 0) {
+                    return { code: "FOREHAND", label: "フォア 🔴", class: "type-forehand" };
+                } else {
+                    return { code: "BACKHAND", label: "バック 🔵", class: "type-backhand" };
+                }
+            }
+        }
+
+        function processImpact(peak) {
+            const headSpeed = peak.speed;
+            const spinRpm = peak.spin;
+
+            // 1. 種目の自動判定
+            const stroke = detectStrokeType(peak);
+            strokeCounts[stroke.code]++;
+
+            // UI更新: バッジ表示
+            strokeTypeBadge.innerText = stroke.label;
+            strokeTypeBadge.className = `stroke-badge ${stroke.class}`;
+
+            // 内訳カウント更新
+            cntForeEl.innerText = strokeCounts.FOREHAND;
+            cntBackEl.innerText = strokeCounts.BACKHAND;
+            cntServeEl.innerText = strokeCounts.SERVE;
+            cntSmashEl.innerText = strokeCounts.SMASH;
+
+            // 統計計算
             shotHistory.speeds.push(headSpeed);
             shotHistory.spins.push(spinRpm);
 
@@ -432,6 +501,7 @@
                     elapsedStr: elapsedStr,
                     elapsedSec: Math.round(elapsedMs / 1000),
                     timeStr: now.toLocaleTimeString(),
+                    type: stroke.code,
                     speed: headSpeed.toFixed(1),
                     spin: Math.round(spinRpm),
                     dist: x.toFixed(1)
@@ -443,9 +513,9 @@
         function renderHistoryGraph() {
             isHistoryView = true;
             
-            analyticsChart.data.labels = recordedShots.map(s => s.elapsedStr);
+            analyticsChart.data.labels = recordedShots.map(s => `${s.elapsedStr} (${s.type[0]})`);
             analyticsChart.data.datasets[0].data = recordedShots.map(s => s.speed);
-            analyticsChart.data.datasets[0].pointRadius = 5; // 点を強調表示
+            analyticsChart.data.datasets[0].pointRadius = 5;
             analyticsChart.data.datasets[0].showLine = true;
 
             analyticsChart.data.datasets[1].data = recordedShots.map(s => s.spin);
