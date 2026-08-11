@@ -40,7 +40,7 @@
 
     <!-- 🔒 パスワード保護 ＆ PWA設定 -->
     <script>
-        const SECRET_PASS = "tennis2026"; // 🔑 設定パスワード
+        const SECRET_PASS = "tennis2026"; 
         let userPass = sessionStorage.getItem("app_auth");
 
         if (userPass !== SECRET_PASS) {
@@ -54,7 +54,6 @@
             }
         }
 
-        // Service Worker（オフライン化機能）登録
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('./sw.js');
         }
@@ -66,7 +65,7 @@
     <button id="resetBtn" class="reset-btn">統計リセット</button>
 
     <div class="grid-container">
-        <!-- 🔋 バッテリー残量カード（新規追加） -->
+        <!-- 🔋 バッテリー残量カード -->
         <div class="card">
             <div class="card-title">バッテリー残量</div>
             <div class="card-main battery-color"><span id="batteryVal">--</span><span style="font-size: 20px;">%</span></div>
@@ -117,12 +116,13 @@
     </div>
 
     <script>
+        // 💡 Bluefy対策: すべて完全な128bit UUID形式（小文字）で定義
         const SERVICE_UUID = '19b10000-e8f2-537e-4f6c-d104768a1214';
         const CHARACTERISTIC_UUID = '19b10001-e8f2-537e-4f6c-d104768a1214';
         
-        // 🔋 バッテリー用 UUID
-        const BATTERY_SERVICE_UUID = 0x180F;
-        const BATTERY_LEVEL_UUID = 0x2A19;
+        // 🔋 バッテリー用 UUID（128bitフル表記）
+        const BATTERY_SERVICE_UUID = '0000180f-0000-1000-8000-00805f9b34fb';
+        const BATTERY_LEVEL_UUID   = '00002a19-0000-1000-8000-00805f9b34fb';
 
         const connectBtn = document.getElementById('connectBtn');
         const resetBtn = document.getElementById('resetBtn');
@@ -186,6 +186,11 @@
         });
 
         connectBtn.addEventListener('click', async () => {
+            if (!navigator.bluetooth) {
+                alert("Web Bluetooth APIに対応していません。");
+                return;
+            }
+
             try {
                 statusText.innerText = "デバイスを検索中...";
                 const device = await navigator.bluetooth.requestDevice({
@@ -203,31 +208,35 @@
                 await characteristic.startNotifications();
                 characteristic.addEventListener('characteristicvaluechanged', handleData);
 
-                // 2. 🔋 バッテリーサービス接続（取得・通知登録）
+                // 2. 🔋 バッテリーサービス接続（Bluefy安全設計）
                 try {
                     const batteryService = await server.getPrimaryService(BATTERY_SERVICE_UUID);
                     const batteryChar = await batteryService.getCharacteristic(BATTERY_LEVEL_UUID);
                     
-                    // 初期値の取得
                     const initialValue = await batteryChar.readValue();
                     updateBatteryUI(initialValue.getUint8(0));
 
-                    // バッテリー変更通知を開始
                     await batteryChar.startNotifications();
                     batteryChar.addEventListener('characteristicvaluechanged', (e) => {
                         const level = e.target.value.getUint8(0);
                         updateBatteryUI(level);
                     });
                 } catch (battErr) {
-                    console.warn("バッテリーサービスが見つからないか、エラーが発生しました:", battErr);
+                    console.warn("バッテリー取得失敗:", battErr);
                     batteryStatusEl.innerText = "未対応";
                 }
 
                 statusText.innerText = "ステータス: 接続完了（テニス計測中）";
                 connectBtn.disabled = true;
             } catch (error) {
-                console.error(error);
-                statusText.innerText = "エラー: " + error.message;
+                console.error("BLE Error:", error);
+                // エラー内容を詳しく画面に吐き出す
+                let errMsg = "不明なエラー";
+                if (typeof error === 'string') errMsg = error;
+                else if (error && error.message) errMsg = error.message;
+                else if (error && error.name) errMsg = error.name;
+                
+                statusText.innerText = "エラー: " + errMsg;
             }
         });
 
@@ -274,7 +283,6 @@
                     currentSwingPeak.spin = spinRpm;
                 }
             } else if (isSwinging && speedKmh < SWING_THRESHOLD * 0.6) {
-                // スイング終了時に統計・飛距離計算を実行
                 if (currentSwingPeak.speed > 0) {
                     processImpact(currentSwingPeak.speed, currentSwingPeak.spin);
                 }
@@ -292,7 +300,6 @@
             analyticsChart.update();
         }
 
-        // 打撃（ピーク時）の分析＆弾道シミュレーション
         function processImpact(headSpeed, spinRpm) {
             shotHistory.speeds.push(headSpeed);
             shotHistory.spins.push(spinRpm);
@@ -308,7 +315,6 @@
             spinAveEl.innerText = Math.round(aveSpin);
             shotCountEl.innerText = shotHistory.speeds.length;
 
-            // 3D物理演算（飛距離・ネットクリアランス）
             const ballSpeedMps = (headSpeed * 1.35) / 3.6;
             const launchAngleRad = 11.0 * (Math.PI / 180.0);
             const g = 9.81;
