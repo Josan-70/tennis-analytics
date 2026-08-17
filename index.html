@@ -189,8 +189,6 @@
         const cntServeEl = document.getElementById('cntServe');
         const cntSmashEl = document.getElementById('cntSmash');
 
-        let shotHistory = { speeds: [], spins: [] };
-        let strokeCounts = { FOREHAND: 0, BACKHAND: 0, SERVE: 0, SMASH: 0 };
         let isRecording = false;
         let recStartTime = null;
         let recordedShots = [];
@@ -238,9 +236,13 @@
 
         sleepBtn.addEventListener('click', async () => {
             if (cmdCharRef && confirm("センサーを休眠（スリープ）状態にしますか？")) {
-                await cmdCharRef.writeValue(new Uint8Array([0x01]));
-                statusText.innerText = "ステータス: センサー休眠完了";
-                sleepBtn.disabled = true;
+                try {
+                    await cmdCharRef.writeValue(new Uint8Array([0x01]));
+                    statusText.innerText = "ステータス: センサー休眠完了";
+                    sleepBtn.disabled = true;
+                } catch(err) {
+                    alert("送信エラー: " + err.message);
+                }
             }
         });
 
@@ -274,8 +276,7 @@
             const store = tx.objectStore("sessions");
             const sessionData = {
                 id: new Date().toLocaleString(),
-                shots: recordedShots,
-                counts: strokeCounts
+                shots: recordedShots
             };
             store.put(sessionData);
         }
@@ -307,7 +308,6 @@
             req.onsuccess = () => {
                 const data = req.result;
                 recordedShots = data.shots;
-                strokeCounts = data.counts;
                 renderHistoryGraph();
                 exportBtn.style.display = "inline-block";
                 closeHistoryModal();
@@ -328,16 +328,24 @@
 
         connectBtn.addEventListener('click', async () => {
             try {
-                statusText.innerText = "デバイス接続中...";
+                statusText.innerText = "デバイス検索中...";
                 const device = await navigator.bluetooth.requestDevice({
                     acceptAllDevices: true,
                     optionalServices: [SERVICE_UUID, BATTERY_SERVICE_UUID]
                 });
 
+                statusText.innerText = "GATT接続中...";
                 const server = await device.gatt.connect();
+
+                statusText.innerText = "サービス取得中...";
                 const service = await server.getPrimaryService(SERVICE_UUID);
                 const characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
-                cmdCharRef = await service.getCharacteristic(CMD_CHARACTERISTIC_UUID);
+                
+                try {
+                    cmdCharRef = await service.getCharacteristic(CMD_CHARACTERISTIC_UUID);
+                } catch(e) {
+                    console.log("コマンドキャラクタリスティック省略");
+                }
 
                 await characteristic.startNotifications();
                 characteristic.addEventListener('characteristicvaluechanged', handleData);
@@ -347,22 +355,30 @@
                     const battChar = await battService.getCharacteristic(BATTERY_LEVEL_UUID);
                     await battChar.startNotifications();
                     battChar.addEventListener('characteristicvaluechanged', (e) => {
-                        const mv = e.target.value.getUint16(0, true);
-                        updateBatteryUI(mv);
+                        if (e.target && e.target.value) {
+                            const mv = e.target.value.getUint16(0, true);
+                            updateBatteryUI(mv);
+                        }
                     });
-                } catch(e) {}
+                } catch(e) {
+                    console.log("バッテリーサービス接続スキップ");
+                }
 
                 statusText.innerText = "ステータス: 接続完了（計測中）";
                 connectBtn.disabled = true;
                 recBtn.disabled = false;
                 sleepBtn.disabled = false;
             } catch (err) {
-                statusText.innerText = "エラー: " + err.message;
+                const errMsg = (err && err.message) ? err.message : String(err);
+                statusText.innerText = "エラー: " + errMsg;
             }
         });
 
         function handleData(e) {
+            if (!e.target || !e.target.value) return;
             const floats = new Float32Array(e.target.value.buffer);
+            if (floats.length < 9) return;
+
             const speed = floats[1].toFixed(1);
             const spin = Math.round(floats[2]);
 
