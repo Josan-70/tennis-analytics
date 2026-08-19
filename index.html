@@ -1,149 +1,236 @@
-let bleDevice = null;
-let gattServer = null;
-let isRecording = false;
-let sessionShots = [];
-let autoReconnectTimer = null;
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>XIAO Tennis Analytics Pro</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: sans-serif; background: #f0f4f8; margin: 0; padding: 15px; color: #333; }
+    h1 { text-align: center; font-size: 1.5rem; margin-bottom: 5px; }
+    .status-bar { text-align: center; font-weight: bold; margin-bottom: 15px; color: #555; }
+    .btn-group { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; margin-bottom: 15px; }
+    button { padding: 8px 14px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; color: white; background: #7f8c8d; }
+    button#btn-connect { background: #3498db; }
+    button#btn-record.recording { background: #e74c3c; }
+    button#btn-record { background: #2ecc71; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 15px; }
+    .card { background: white; padding: 12px; border-radius: 8px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    .card-title { font-size: 0.8rem; color: #7f8c8d; margin-bottom: 4px; }
+    .val-main { font-size: 1.6rem; font-weight: bold; color: #2c3e50; }
+    .val-sub { font-size: 0.75rem; color: #7f8c8d; margin-top: 4px; }
+    .chart-container { background: white; padding: 10px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+  </style>
+</head>
+<body>
 
-// BLE接続メイン処理
-async function connectBLE() {
-  try {
-    bleDevice = await navigator.bluetooth.requestDevice({
-      filters: [{ name: 'XIAO-Tennis' }],
-      optionalServices: [
-        '19b10000-e8f2-537e-4f6c-d104768a1214',
-        '0000180f-0000-1000-8000-00805f9b34fb'
-      ]
-    });
+  <h1>🎾 XIAO Tennis Analytics Pro</h1>
+  <div class="status-bar">ステータス: <span id="status-text">未接続</span></div>
 
-    // 切断イベントの監視登録（自動再接続のフック）
-    bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+  <div class="btn-group">
+    <button id="btn-connect" onclick="connectBLE()">BLE 接続開始</button>
+    <button id="btn-record" onclick="toggleRecord()">▶ 記録開始</button>
+  </div>
 
-    await startGattConnection();
-  } catch (error) {
-    console.error("BLE Connection Error:", error);
-  }
-}
+  <div class="grid">
+    <div class="card">
+      <div class="card-title">種目 & ヘッドスピード</div>
+      <div id="shot-type" class="val-sub" style="font-weight:bold; color:#e74c3c;">-</div>
+      <div class="val-main"><span id="speed-val">0.0</span> <span style="font-size:0.9rem;">km/h</span></div>
+      <div class="val-sub">MAX: <span id="speed-max">0.0</span> | AVE: <span id="speed-ave">0.0</span></div>
+    </div>
+    <div class="card">
+      <div class="card-title">スピン量 (RPM)</div>
+      <div class="val-main" style="color:#2ecc71;" id="spin-val">0</div>
+      <div class="val-sub">MAX: <span id="spin-max">0</span> | AVE: <span id="spin-ave">0</span></div>
+    </div>
+    <div class="card">
+      <div class="card-title">打球内訳 (全 <span id="total-count">0</span> 打)</div>
+      <div class="val-sub" style="margin-top:10px;">
+        F:<span id="count-f">0</span> B:<span id="count-b">0</span> S:<span id="count-s">0</span> Sm:<span id="count-sm">0</span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">バッテリー残量</div>
+      <div class="val-main" style="color:#3498db;" id="batt-pct">--%</div>
+      <div class="val-sub">電圧: <span id="batt-mv">----</span> mV</div>
+    </div>
+  </div>
 
-// GATTサーバーへの接続処理
-async function startGattConnection() {
-  if (!bleDevice) return;
-  
-  updateStatus("接続中...");
-  gattServer = await bleDevice.gatt.connect();
+  <div class="chart-container">
+    <canvas id="myChart" height="120"></canvas>
+  </div>
 
-  // テニスデータサービス登録
-  const tennisService = await gattServer.getPrimaryService('19b10000-e8f2-537e-4f6c-d104768a1214');
-  const dataChar = await tennisService.getCharacteristic('19b10001-e8f2-537e-4f6c-d104768a1214');
-  await dataChar.startNotifications();
-  dataChar.addEventListener('characteristicvaluechanged', handleData);
+  <script>
+    let bleDevice = null;
+    let gattServer = null;
+    let isRecording = false;
+    let sessionShots = [];
+    let autoReconnectTimer = null;
+    let chartInstance = null;
 
-  // バッテリーサービス登録
-  try {
-    const battService = await gattServer.getPrimaryService('0000180f-0000-1000-8000-00805f9b34fb');
-    const battChar = await battService.getCharacteristic('00002a19-0000-1000-8000-00805f9b34fb');
-    await battChar.startNotifications();
-    battChar.addEventListener('characteristicvaluechanged', handleBatteryData);
-  } catch(e) { console.log("Battery service skip"); }
+    // Chart.js の初期化
+    window.onload = () => {
+      const ctx = document.getElementById('myChart').getContext('2d');
+      chartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: [],
+          datasets: [
+            { label: 'Speed (km/h)', data: [], borderColor: '#e74c3c', yAxisID: 'y' },
+            { label: 'Spin (rpm)', data: [], borderColor: '#2ecc71', yAxisID: 'y1' }
+          ]
+        },
+        options: {
+          responsive: true,
+          scales: {
+            y: { type: 'linear', position: 'left', min: 0, max: 160 },
+            y1: { type: 'linear', position: 'right', min: 0, max: 3500, grid: { drawOnChartArea: false } }
+          }
+        }
+      });
+    };
 
-  updateStatus("接続完了（計測中）");
-  if (autoReconnectTimer) clearInterval(autoReconnectTimer);
-}
-
-// 【機能1】電波切断時の自動再接続処理
-function onDisconnected(event) {
-  updateStatus("⚠️ 電波切断：再接続を試みています...");
-  
-  // 3秒おきにバックグラウンドで自動再接続をリトライ
-  if (autoReconnectTimer) clearInterval(autoReconnectTimer);
-  autoReconnectTimer = setInterval(async () => {
-    if (bleDevice && !bleDevice.gatt.connected) {
+    // BLE接続開始
+    async function connectBLE() {
       try {
+        bleDevice = await navigator.bluetooth.requestDevice({
+          filters: [{ name: 'XIAO-Tennis' }],
+          optionalServices: [
+            '19b10000-e8f2-537e-4f6c-d104768a1214',
+            '0000180f-0000-1000-8000-00805f9b34fb'
+          ]
+        });
+
+        bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
         await startGattConnection();
-      } catch (err) {
-        console.log("再接続リトライ中...");
+      } catch (error) {
+        console.error("BLE Connection Error:", error);
       }
     }
-  }, 3000);
-}
 
-// 【機能2】データ解析とリアルタイム集計（MAX/AVE/内訳）
-function handleData(event) {
-  const value = event.target.value;
-  const dataView = new DataView(value.buffer);
+    // GATT接続確立
+    async function startGattConnection() {
+      if (!bleDevice) return;
+      document.getElementById('status-text').textContent = "接続中...";
+      
+      gattServer = await bleDevice.gatt.connect();
 
-  // Float32 × 9要素のデコード
-  const accelMag = dataView.getFloat32(0, true);
-  const speed    = dataView.getFloat32(4, true);
-  const spin     = dataView.getFloat32(8, true);
-  const gx       = dataView.getFloat32(24, true);
-  const gz       = dataView.getFloat32(32, true);
+      const tennisService = await gattServer.getPrimaryService('19b10000-e8f2-537e-4f6c-d104768a1214');
+      const dataChar = await tennisService.getCharacteristic('19b10001-e8f2-537e-4f6c-d104768a1214');
+      await dataChar.startNotifications();
+      dataChar.addEventListener('characteristicvaluechanged', handleData);
 
-  // ショット判別
-  let shotType = "FOREHAND";
-  if (gz > 150) shotType = "SERVE";
-  else if (gx < -100) shotType = "BACKHAND";
-  else if (accelMag > 5.0 && gz > 100) shotType = "SMASH";
+      try {
+        const battService = await gattServer.getPrimaryService('0000180f-0000-1000-8000-00805f9b34fb');
+        const battChar = await battService.getCharacteristic('00002a19-0000-1000-8000-00805f9b34fb');
+        await battChar.startNotifications();
+        battChar.addEventListener('characteristicvaluechanged', handleBatteryData);
+      } catch(e) { console.log("Battery service skip"); }
 
-  const shotData = { speed: speed, spin: spin, type: shotType, accel: accelMag };
+      document.getElementById('status-text').textContent = "接続完了（計測中）";
+      if (autoReconnectTimer) clearInterval(autoReconnectTimer);
+    }
 
-  // パネルの即時表示更新
-  updateCurrentPanel(shotData);
+    // 自動再接続処理
+    function onDisconnected() {
+      document.getElementById('status-text').textContent = "⚠️ 切断中：自動再接続を試みています...";
+      if (autoReconnectTimer) clearInterval(autoReconnectTimer);
+      autoReconnectTimer = setInterval(async () => {
+        if (bleDevice && !bleDevice.gatt.connected) {
+          try { await startGattConnection(); } catch (e) {}
+        }
+      }, 3000);
+    }
 
-  // 記録中の場合、配列保持＆MAX/AVE/内訳の再計算を実行
-  if (isRecording) {
-    sessionShots.push(shotData);
-    calculateSessionStats(sessionShots);
-  }
-}
+    // テニスデータ受信処理
+    function handleData(event) {
+      const dataView = new DataView(event.target.value.buffer);
+      const accelMag = dataView.getFloat32(0, true);
+      const speed    = dataView.getFloat32(4, true);
+      const spin     = dataView.getFloat32(8, true);
+      const gx       = dataView.getFloat32(24, true);
+      const gz       = dataView.getFloat32(32, true);
 
-// バッテリーデータ解析 (mV ➔ %)
-function handleBatteryData(event) {
-  const mv = event.target.value.getUint16(0, true);
-  
-  // 4200mV (100%) ~ 3300mV (0%) 計算
-  let pct = Math.round(((mv - 3300) / (4200 - 3300)) * 100);
-  if (pct > 100) pct = 100;
-  if (pct < 0) pct = 0;
+      let shotType = "FOREHAND";
+      if (gz > 150) shotType = "SERVE";
+      else if (gx < -100) shotType = "BACKHAND";
+      else if (accelMag > 5.0 && gz > 100) shotType = "SMASH";
 
-  document.getElementById('batt-mv').textContent = mv;
-  document.getElementById('batt-pct').textContent = pct + "%";
-}
+      const shotData = { speed: speed, spin: spin, type: shotType };
 
-// 集計ロジック（MAX / AVE / F,B,S,Sm）
-function calculateSessionStats(shots) {
-  if (shots.length === 0) return;
+      document.getElementById('shot-type').textContent = shotType;
+      document.getElementById('speed-val').textContent = speed.toFixed(1);
+      document.getElementById('spin-val').textContent = Math.round(spin);
 
-  let maxSpeed = 0, sumSpeed = 0;
-  let maxSpin = 0, sumSpin = 0;
-  let counts = { FOREHAND: 0, BACKHAND: 0, SERVE: 0, SMASH: 0 };
+      if (isRecording) {
+        sessionShots.push(shotData);
+        calculateSessionStats();
 
-  shots.forEach(s => {
-    if (s.speed > maxSpeed) maxSpeed = s.speed;
-    sumSpeed += s.speed;
+        // グラフ更新
+        const timeLabel = new Date().toLocaleTimeString().slice(3, 8);
+        chartInstance.data.labels.push(timeLabel);
+        chartInstance.data.datasets[0].data.push(speed.toFixed(1));
+        chartInstance.data.datasets[1].data.push(Math.round(spin));
+        chartInstance.update();
+      }
+    }
 
-    if (s.spin > maxSpin) maxSpin = s.spin;
-    sumSpin += s.spin;
+    // バッテリーデータ受信処理
+    function handleBatteryData(event) {
+      const mv = event.target.value.getUint16(0, true);
+      let pct = Math.round(((mv - 3300) / (4200 - 3300)) * 100);
+      pct = Math.max(0, Math.min(100, pct));
 
-    if (counts[s.type] !== undefined) counts[s.type]++;
-  });
+      document.getElementById('batt-mv').textContent = mv;
+      document.getElementById('batt-pct').textContent = pct + "%";
+    }
 
-  // HTML要素への反映
-  document.getElementById('speed-max').textContent = maxSpeed.toFixed(1);
-  document.getElementById('speed-ave').textContent = (sumSpeed / shots.length).toFixed(1);
-  document.getElementById('spin-max').textContent = Math.round(maxSpin);
-  document.getElementById('spin-ave').textContent = Math.round(sumSpin);
+    // セッション統計計算 (MAX / AVE / 打球内訳)
+    function calculateSessionStats() {
+      if (sessionShots.length === 0) return;
 
-  document.getElementById('count-f').textContent = counts.FOREHAND;
-  document.getElementById('count-b').textContent = counts.BACKHAND;
-  document.getElementById('count-s').textContent = counts.SERVE;
-  document.getElementById('count-sm').textContent = counts.SMASH;
-  document.getElementById('total-count').textContent = shots.length;
-}
+      let maxSpeed = 0, sumSpeed = 0;
+      let maxSpin = 0, sumSpin = 0;
+      let counts = { FOREHAND: 0, BACKHAND: 0, SERVE: 0, SMASH: 0 };
 
-// 記録ボタン切替処理
-function toggleRecord() {
-  isRecording = !isRecording;
-  if (isRecording) {
-    sessionShots = []; // 新規セッション開始でリセット
-  }
-}
+      sessionShots.forEach(s => {
+        if (s.speed > maxSpeed) maxSpeed = s.speed;
+        sumSpeed += s.speed;
+        if (s.spin > maxSpin) maxSpin = s.spin;
+        sumSpin += s.spin;
+        if (counts[s.type] !== undefined) counts[s.type]++;
+      });
+
+      document.getElementById('speed-max').textContent = maxSpeed.toFixed(1);
+      document.getElementById('speed-ave').textContent = (sumSpeed / sessionShots.length).toFixed(1);
+      document.getElementById('spin-max').textContent = Math.round(maxSpin);
+      document.getElementById('spin-ave').textContent = Math.round(sumSpin / sessionShots.length);
+
+      document.getElementById('count-f').textContent = counts.FOREHAND;
+      document.getElementById('count-b').textContent = counts.BACKHAND;
+      document.getElementById('count-s').textContent = counts.SERVE;
+      document.getElementById('count-sm').textContent = counts.SMASH;
+      document.getElementById('total-count').textContent = sessionShots.length;
+    }
+
+    // 記録状態切り替え
+    function toggleRecord() {
+      isRecording = !isRecording;
+      const btn = document.getElementById('btn-record');
+      if (isRecording) {
+        btn.textContent = "■ 記録終了";
+        btn.classList.add("recording");
+        sessionShots = [];
+        chartInstance.data.labels = [];
+        chartInstance.data.datasets[0].data = [];
+        chartInstance.data.datasets[1].data = [];
+        chartInstance.update();
+      } else {
+        btn.textContent = "▶ 記録開始";
+        btn.classList.remove("recording");
+      }
+    }
+  </script>
+</body>
+</html>
