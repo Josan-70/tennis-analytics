@@ -1,415 +1,149 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>XIAO Tennis Analytics Pro</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
-    <link rel="manifest" href="manifest.json">
-    <meta name="theme-color" content="#007bff">
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; margin: 15px; background: #eef2f5; }
-        h1 { color: #222; margin-bottom: 5px; }
-        .controls { margin-bottom: 15px; display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; }
-        
-        button { padding: 10px 16px; font-size: 14px; font-weight: bold; cursor: pointer; color: white; border: none; border-radius: 8px; transition: 0.2s; }
-        button:disabled { background: #ccc !important; cursor: not-allowed; }
-        
-        .btn-connect { background: #007bff; }
-        .btn-reset { background: #6c757d; }
-        .btn-rec-start { background: #28a745; }
-        .btn-rec-stop { background: #dc3545; }
-        .btn-export { background: #17a2b8; }
-        .btn-sleep { background: #6f42c1; }
-        .btn-history { background: #fd7e14; }
+let bleDevice = null;
+let gattServer = null;
+let isRecording = false;
+let sessionShots = [];
+let autoReconnectTimer = null;
 
-        .grid-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; max-width: 950px; margin: 20px auto; }
-        .card { background: white; padding: 15px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.06); text-align: center; }
-        .card-title { font-size: 13px; color: #666; font-weight: bold; text-transform: uppercase; }
-        .card-main { font-size: 32px; font-weight: bold; color: #111; margin: 5px 0; }
-        .card-sub { font-size: 12px; color: #777; display: flex; justify-content: space-around; border-top: 1px solid #eee; margin-top: 8px; padding-top: 6px; }
-        
-        .speed-color { color: #ff3e3e; }
-        .spin-color { color: #28a745; }
-        .dist-color { color: #17a2b8; }
-        .net-color { color: #fd7e14; }
-        .battery-color { color: #007bff; }
+// BLE接続メイン処理
+async function connectBLE() {
+  try {
+    bleDevice = await navigator.bluetooth.requestDevice({
+      filters: [{ name: 'XIAO-Tennis' }],
+      optionalServices: [
+        '19b10000-e8f2-537e-4f6c-d104768a1214',
+        '0000180f-0000-1000-8000-00805f9b34fb'
+      ]
+    });
 
-        .stroke-badge { display: inline-block; padding: 3px 10px; border-radius: 6px; font-weight: bold; color: white; font-size: 14px; margin-top: 4px; }
-        .type-serve { background-color: #9c27b0; }
-        .type-smash { background-color: #e91e63; }
-        .type-forehand { background-color: #ff9800; }
-        .type-backhand { background-color: #2196f3; }
-        .type-unknown { background-color: #777; }
+    // 切断イベントの監視登録（自動再接続のフック）
+    bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
 
-        .judgement { font-weight: bold; padding: 2px 8px; border-radius: 4px; color: white; font-size: 12px; }
-        .in-court { background-color: #28a745; }
-        .out-court { background-color: #dc3545; }
+    await startGattConnection();
+  } catch (error) {
+    console.error("BLE Connection Error:", error);
+  }
+}
 
-        .chart-container { max-width: 950px; margin: 15px auto; background: white; padding: 15px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.06); }
-        .rec-indicator { display: inline-block; width: 10px; height: 10px; background-color: #dc3545; border-radius: 50%; margin-right: 5px; animation: blink 1s infinite; }
-        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.2; } 100% { opacity: 1; } }
-        canvas { max-height: 280px; }
+// GATTサーバーへの接続処理
+async function startGattConnection() {
+  if (!bleDevice) return;
+  
+  updateStatus("接続中...");
+  gattServer = await bleDevice.gatt.connect();
 
-        .modal { display: none; position: fixed; z-index: 100; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); }
-        .modal-content { background: white; margin: 10% auto; padding: 20px; border-radius: 12px; max-width: 500px; text-align: left; }
-        .modal-list { max-height: 250px; overflow-y: auto; margin: 10px 0; padding: 0; list-style: none; }
-        .modal-list li { padding: 10px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
-    </style>
-</head>
-<body>
+  // テニスデータサービス登録
+  const tennisService = await gattServer.getPrimaryService('19b10000-e8f2-537e-4f6c-d104768a1214');
+  const dataChar = await tennisService.getCharacteristic('19b10001-e8f2-537e-4f6c-d104768a1214');
+  await dataChar.startNotifications();
+  dataChar.addEventListener('characteristicvaluechanged', handleData);
 
-    <script>
-        const SECRET_PASS = "tennis2026"; 
-        let userPass = sessionStorage.getItem("app_auth");
+  // バッテリーサービス登録
+  try {
+    const battService = await gattServer.getPrimaryService('0000180f-0000-1000-8000-00805f9b34fb');
+    const battChar = await battService.getCharacteristic('00002a19-0000-1000-8000-00805f9b34fb');
+    await battChar.startNotifications();
+    battChar.addEventListener('characteristicvaluechanged', handleBatteryData);
+  } catch(e) { console.log("Battery service skip"); }
 
-        if (userPass !== SECRET_PASS) {
-            userPass = prompt("【限定アクセス】パスワードを入力してください:");
-            if (userPass === SECRET_PASS) {
-                sessionStorage.setItem("app_auth", userPass);
-            } else {
-                alert("パスワードが違います。アクセスできません。");
-                document.body.innerHTML = "<div style='margin-top:100px;'><h2>🔒 パスワード保護されています</h2></div>";
-                window.stop();
-            }
-        }
-    </script>
+  updateStatus("接続完了（計測中）");
+  if (autoReconnectTimer) clearInterval(autoReconnectTimer);
+}
 
-    <h1>🎾 XIAO Tennis Analytics Pro</h1>
-    <p id="status">ステータス: 未接続</p>
+// 【機能1】電波切断時の自動再接続処理
+function onDisconnected(event) {
+  updateStatus("⚠️ 電波切断：再接続を試みています...");
+  
+  // 3秒おきにバックグラウンドで自動再接続をリトライ
+  if (autoReconnectTimer) clearInterval(autoReconnectTimer);
+  autoReconnectTimer = setInterval(async () => {
+    if (bleDevice && !bleDevice.gatt.connected) {
+      try {
+        await startGattConnection();
+      } catch (err) {
+        console.log("再接続リトライ中...");
+      }
+    }
+  }, 3000);
+}
 
-    <div class="controls">
-        <button id="connectBtn" class="btn-connect">BLE 接続開始</button>
-        <button id="recBtn" class="btn-rec-start" disabled>▶ 記録開始</button>
-        <button id="exportBtn" class="btn-export" style="display: none;">📥 CSV共有</button>
-        <button id="historyBtn" class="btn-history">📂 過去ログ</button>
-        <button id="sleepBtn" class="btn-sleep" disabled>💤 休眠</button>
-        <button id="resetBtn" class="btn-reset">リセット</button>
-    </div>
+// 【機能2】データ解析とリアルタイム集計（MAX/AVE/内訳）
+function handleData(event) {
+  const value = event.target.value;
+  const dataView = new DataView(value.buffer);
 
-    <div class="grid-container">
-        <div class="card">
-            <div class="card-title">種目 ＆ ヘッドスピード</div>
-            <div><span id="strokeTypeBadge" class="stroke-badge type-unknown">--</span></div>
-            <div class="card-main speed-color"><span id="speedVal">0.0</span><span style="font-size: 16px;"> km/h</span></div>
-            <div class="card-sub">
-                <span>MAX: <b id="speedMax">0.0</b></span>
-                <span>AVE: <b id="speedAve">0.0</b></span>
-            </div>
-        </div>
+  // Float32 × 9要素のデコード
+  const accelMag = dataView.getFloat32(0, true);
+  const speed    = dataView.getFloat32(4, true);
+  const spin     = dataView.getFloat32(8, true);
+  const gx       = dataView.getFloat32(24, true);
+  const gz       = dataView.getFloat32(32, true);
 
-        <div class="card">
-            <div class="card-title">スピン量 (rpm)</div>
-            <div class="card-main spin-color" id="spinVal">0</div>
-            <div class="card-sub">
-                <span>MAX: <b id="spinMax">0</b></span>
-                <span>AVE: <b id="spinAve">0</b></span>
-            </div>
-        </div>
+  // ショット判別
+  let shotType = "FOREHAND";
+  if (gz > 150) shotType = "SERVE";
+  else if (gx < -100) shotType = "BACKHAND";
+  else if (accelMag > 5.0 && gz > 100) shotType = "SMASH";
 
-        <div class="card">
-            <div class="card-title">推定飛距離 ＆ 内訳</div>
-            <div class="card-main dist-color"><span id="distVal">0.0</span><span style="font-size: 16px;"> m</span></div>
-            <div class="card-sub" style="flex-direction: column; gap: 3px;">
-                <div>判定: <span id="courtJudge" class="judgement in-court">-</span> | 計 <b id="shotCount">0</b> 打</div>
-                <div style="font-size:11px; color:#555;">
-                    F:<b id="cntFore">0</b> B:<b id="cntBack">0</b> S:<b id="cntServe">0</b> Sm:<b id="cntSmash">0</b>
-                </div>
-            </div>
-        </div>
+  const shotData = { speed: speed, spin: spin, type: shotType, accel: accelMag };
 
-        <div class="card">
-            <div class="card-title">バッテリー残量（精密）</div>
-            <div class="card-main battery-color"><span id="batteryPct">--</span><span style="font-size: 20px;">%</span></div>
-            <div class="card-sub">
-                <span>電圧: <b id="batteryMv">-- mV</b></span>
-                <span>状態: <b id="batteryStatus">未接続</b></span>
-            </div>
-        </div>
-    </div>
+  // パネルの即時表示更新
+  updateCurrentPanel(shotData);
 
-    <div class="chart-container">
-        <h3>📈 <span id="recDot" style="display:none;" class="rec-indicator"></span><span id="chartTitle">リアルタイム・スイング解析</span></h3>
-        <canvas id="analyticsChart"></canvas>
-    </div>
+  // 記録中の場合、配列保持＆MAX/AVE/内訳の再計算を実行
+  if (isRecording) {
+    sessionShots.push(shotData);
+    calculateSessionStats(sessionShots);
+  }
+}
 
-    <div id="historyModal" class="modal">
-        <div class="modal-content">
-            <h3>📂 保存済みプレイログ一覧</h3>
-            <ul id="logList" class="modal-list"></ul>
-            <button onclick="closeHistoryModal()" style="background:#6c757d; width:100%;">閉じる</button>
-        </div>
-    </div>
+// バッテリーデータ解析 (mV ➔ %)
+function handleBatteryData(event) {
+  const mv = event.target.value.getUint16(0, true);
+  
+  // 4200mV (100%) ~ 3300mV (0%) 計算
+  let pct = Math.round(((mv - 3300) / (4200 - 3300)) * 100);
+  if (pct > 100) pct = 100;
+  if (pct < 0) pct = 0;
 
-    <script>
-        const SERVICE_UUID = '19b10000-e8f2-537e-4f6c-d104768a1214';
-        const CHARACTERISTIC_UUID = '19b10001-e8f2-537e-4f6c-d104768a1214';
-        const CMD_CHARACTERISTIC_UUID = '19b10002-e8f2-537e-4f6c-d104768a1214';
-        const BATTERY_SERVICE_UUID = '0000180f-0000-1000-8000-00805f9b34fb';
-        const BATTERY_LEVEL_UUID   = '00002a19-0000-1000-8000-00805f9b34fb';
+  document.getElementById('batt-mv').textContent = mv;
+  document.getElementById('batt-pct').textContent = pct + "%";
+}
 
-        let cmdCharRef = null;
-        let db = null;
+// 集計ロジック（MAX / AVE / F,B,S,Sm）
+function calculateSessionStats(shots) {
+  if (shots.length === 0) return;
 
-        const request = indexedDB.open("TennisAnalyticsDB", 1);
-        request.onupgradeneeded = (e) => {
-            db = e.target.result;
-            db.createObjectStore("sessions", { keyPath: "id" });
-        };
-        request.onsuccess = (e) => { db = e.target.result; };
+  let maxSpeed = 0, sumSpeed = 0;
+  let maxSpin = 0, sumSpin = 0;
+  let counts = { FOREHAND: 0, BACKHAND: 0, SERVE: 0, SMASH: 0 };
 
-        const connectBtn = document.getElementById('connectBtn');
-        const recBtn = document.getElementById('recBtn');
-        const exportBtn = document.getElementById('exportBtn');
-        const sleepBtn = document.getElementById('sleepBtn');
-        const historyBtn = document.getElementById('historyBtn');
-        const resetBtn = document.getElementById('resetBtn');
-        const statusText = document.getElementById('status');
-        const chartTitle = document.getElementById('chartTitle');
-        const recDot = document.getElementById('recDot');
+  shots.forEach(s => {
+    if (s.speed > maxSpeed) maxSpeed = s.speed;
+    sumSpeed += s.speed;
 
-        const strokeTypeBadge = document.getElementById('strokeTypeBadge');
-        const batteryPctEl = document.getElementById('batteryPct');
-        const batteryMvEl = document.getElementById('batteryMv');
-        const batteryStatusEl = document.getElementById('batteryStatus');
+    if (s.spin > maxSpin) maxSpin = s.spin;
+    sumSpin += s.spin;
 
-        const speedValEl = document.getElementById('speedVal');
-        const speedMaxEl = document.getElementById('speedMax');
-        const speedAveEl = document.getElementById('speedAve');
-        const spinValEl = document.getElementById('spinVal');
-        const spinMaxEl = document.getElementById('spinMax');
-        const spinAveEl = document.getElementById('spinAve');
-        const distValEl = document.getElementById('distVal');
-        const courtJudgeEl = document.getElementById('courtJudge');
-        const shotCountEl = document.getElementById('shotCount');
+    if (counts[s.type] !== undefined) counts[s.type]++;
+  });
 
-        const cntForeEl = document.getElementById('cntFore');
-        const cntBackEl = document.getElementById('cntBack');
-        const cntServeEl = document.getElementById('cntServe');
-        const cntSmashEl = document.getElementById('cntSmash');
+  // HTML要素への反映
+  document.getElementById('speed-max').textContent = maxSpeed.toFixed(1);
+  document.getElementById('speed-ave').textContent = (sumSpeed / shots.length).toFixed(1);
+  document.getElementById('spin-max').textContent = Math.round(maxSpin);
+  document.getElementById('spin-ave').textContent = Math.round(sumSpin);
 
-        let isRecording = false;
-        let recStartTime = null;
-        let recordedShots = [];
+  document.getElementById('count-f').textContent = counts.FOREHAND;
+  document.getElementById('count-b').textContent = counts.BACKHAND;
+  document.getElementById('count-s').textContent = counts.SERVE;
+  document.getElementById('count-sm').textContent = counts.SMASH;
+  document.getElementById('total-count').textContent = shots.length;
+}
 
-        const ctx = document.getElementById('analyticsChart').getContext('2d');
-        const analyticsChart = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: Array(60).fill(''),
-                datasets: [
-                    { label: 'Speed (km/h)', borderColor: '#ff3e3e', data: [], fill: false, pointRadius: 0, yAxisID: 'ySpeed' },
-                    { label: 'Spin (rpm)', borderColor: '#28a745', data: [], fill: false, pointRadius: 0, yAxisID: 'ySpin' }
-                ]
-            },
-            options: {
-                responsive: true,
-                animation: false,
-                plugins: {
-                    zoom: {
-                        pan: { enabled: true, mode: 'x' },
-                        zoom: { pinch: { enabled: true }, wheel: { enabled: true }, mode: 'x' }
-                    }
-                },
-                scales: {
-                    ySpeed: { type: 'linear', position: 'left', min: 0, max: 160 },
-                    ySpin:  { type: 'linear', position: 'right', min: 0, max: 3500 }
-                }
-            }
-        });
-
-        function updateBatteryUI(mv) {
-            batteryMvEl.innerText = `${mv} mV`;
-            let pct = 0;
-            let status = "正常";
-
-            if (mv >= 4000) pct = 100;
-            else if (mv >= 3800) pct = 75;
-            else if (mv >= 3600) pct = 50;
-            else if (mv >= 3400) pct = 25;
-            else { pct = 0; status = "⚠️要充電"; }
-
-            batteryPctEl.innerText = pct;
-            batteryStatusEl.innerText = status;
-        }
-
-        sleepBtn.addEventListener('click', async () => {
-            if (cmdCharRef && confirm("センサーを休眠（スリープ）状態にしますか？")) {
-                try {
-                    await cmdCharRef.writeValue(new Uint8Array([0x01]));
-                    statusText.innerText = "ステータス: センサー休眠完了";
-                    sleepBtn.disabled = true;
-                } catch(err) {
-                    alert("送信エラー: " + err.message);
-                }
-            }
-        });
-
-        recBtn.addEventListener('click', () => {
-            if (!isRecording) {
-                isRecording = true;
-                recStartTime = new Date();
-                recordedShots = [];
-                recBtn.innerText = "⏹ 記録終了";
-                recBtn.className = "btn-rec-stop";
-                recDot.style.display = "inline-block";
-                chartTitle.innerText = "プレイログ記録中...";
-            } else {
-                isRecording = false;
-                recBtn.innerText = "▶ 記録開始";
-                recBtn.className = "btn-rec-start";
-                recDot.style.display = "none";
-                chartTitle.innerText = `プレイログ結果（全 ${recordedShots.length} 打）`;
-
-                if (recordedShots.length > 0) {
-                    exportBtn.style.display = "inline-block";
-                    renderHistoryGraph();
-                    saveSessionToDB();
-                }
-            }
-        });
-
-        function saveSessionToDB() {
-            if (!db) return;
-            const tx = db.transaction("sessions", "readwrite");
-            const store = tx.objectStore("sessions");
-            const sessionData = {
-                id: new Date().toLocaleString(),
-                shots: recordedShots
-            };
-            store.put(sessionData);
-        }
-
-        historyBtn.addEventListener('click', () => {
-            if (!db) return;
-            const tx = db.transaction("sessions", "readonly");
-            const store = tx.objectStore("sessions");
-            const req = store.getAll();
-            req.onsuccess = () => {
-                const listEl = document.getElementById('logList');
-                listEl.innerHTML = "";
-                req.result.forEach(item => {
-                    const li = document.createElement('li');
-                    li.innerHTML = `<span><b>${item.id}</b> (${item.shots.length}打)</span>
-                        <button style="background:#007bff; padding:5px 10px;" onclick="loadSession('${item.id}')">復元</button>`;
-                    listEl.appendChild(li);
-                });
-                document.getElementById('historyModal').style.display = 'block';
-            };
-        });
-
-        function closeHistoryModal() { document.getElementById('historyModal').style.display = 'none'; }
-
-        window.loadSession = (id) => {
-            const tx = db.transaction("sessions", "readonly");
-            const store = tx.objectStore("sessions");
-            const req = store.get(id);
-            req.onsuccess = () => {
-                const data = req.result;
-                recordedShots = data.shots;
-                renderHistoryGraph();
-                exportBtn.style.display = "inline-block";
-                closeHistoryModal();
-            };
-        };
-
-        exportBtn.addEventListener('click', async () => {
-            if (recordedShots.length === 0) return;
-            let csvText = "No,経過時間,時刻,種別,ヘッドスピード(km/h),スピン量(rpm),推定飛距離(m)\n";
-            recordedShots.forEach((s, idx) => {
-                csvText += `${idx + 1},${s.elapsedStr},${s.timeStr},${s.type},${s.speed},${s.spin},${s.dist}\n`;
-            });
-            const file = new File([new Blob([csvText], { type: 'text/csv' })], `tennis_log.csv`, { type: 'text/csv' });
-            if (navigator.canShare && navigator.canShare({ files: [file] })) {
-                await navigator.share({ files: [file], title: 'テニスログ' });
-            }
-        });
-
-        connectBtn.addEventListener('click', async () => {
-            try {
-                statusText.innerText = "デバイス検索中...";
-                const device = await navigator.bluetooth.requestDevice({
-                    acceptAllDevices: true,
-                    optionalServices: [SERVICE_UUID, BATTERY_SERVICE_UUID]
-                });
-
-                statusText.innerText = "GATT接続中...";
-                const server = await device.gatt.connect();
-
-                statusText.innerText = "サービス取得中...";
-                const service = await server.getPrimaryService(SERVICE_UUID);
-                const characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
-                
-                try {
-                    cmdCharRef = await service.getCharacteristic(CMD_CHARACTERISTIC_UUID);
-                } catch(e) {
-                    console.log("コマンドキャラクタリスティック省略");
-                }
-
-                await characteristic.startNotifications();
-                characteristic.addEventListener('characteristicvaluechanged', handleData);
-
-                try {
-                    const battService = await server.getPrimaryService(BATTERY_SERVICE_UUID);
-                    const battChar = await battService.getCharacteristic(BATTERY_LEVEL_UUID);
-                    await battChar.startNotifications();
-                    battChar.addEventListener('characteristicvaluechanged', (e) => {
-                        if (e.target && e.target.value) {
-                            const mv = e.target.value.getUint16(0, true);
-                            updateBatteryUI(mv);
-                        }
-                    });
-                } catch(e) {
-                    console.log("バッテリーサービス接続スキップ");
-                }
-
-                statusText.innerText = "ステータス: 接続完了（計測中）";
-                connectBtn.disabled = true;
-                recBtn.disabled = false;
-                sleepBtn.disabled = false;
-            } catch (err) {
-                const errMsg = (err && err.message) ? err.message : String(err);
-                statusText.innerText = "エラー: " + errMsg;
-            }
-        });
-
-        function handleData(e) {
-            if (!e.target || !e.target.value) return;
-            const floats = new Float32Array(e.target.value.buffer);
-            if (floats.length < 9) return;
-
-            const speed = floats[1].toFixed(1);
-            const spin = Math.round(floats[2]);
-
-            speedValEl.innerText = speed;
-            spinValEl.innerText = spin;
-
-            processImpact({ speed: parseFloat(speed), spin: spin, az: floats[5], gy: floats[7], gz: floats[8] });
-        }
-
-        function processImpact(peak) {
-            let type = "FOREHAND";
-            if (peak.az < -0.3) type = peak.speed > 55 ? "SERVE" : "SMASH";
-            else if (peak.gz < 0) type = "BACKHAND";
-
-            strokeTypeBadge.innerText = type;
-            if (isRecording) {
-                const now = new Date();
-                recordedShots.push({
-                    elapsedStr: `${Math.floor((now - recStartTime)/60000)}:${Math.floor(((now - recStartTime)%60000)/1000)}`,
-                    timeStr: now.toLocaleTimeString(),
-                    type: type, speed: peak.speed, spin: peak.spin, dist: (peak.speed * 0.25).toFixed(1)
-                });
-            }
-        }
-
-        function renderHistoryGraph() {
-            analyticsChart.data.labels = recordedShots.map(s => s.elapsedStr);
-            analyticsChart.data.datasets[0].data = recordedShots.map(s => s.speed);
-            analyticsChart.data.datasets[1].data = recordedShots.map(s => s.spin);
-            analyticsChart.update();
-        }
-    </script>
-</body>
-</html>
+// 記録ボタン切替処理
+function toggleRecord() {
+  isRecording = !isRecording;
+  if (isRecording) {
+    sessionShots = []; // 新規セッション開始でリセット
+  }
+}
