@@ -6,20 +6,30 @@
   <title>XIAO Tennis Analytics Pro</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
-    body { font-family: sans-serif; background: #f0f4f8; margin: 0; padding: 15px; color: #333; }
-    h1 { text-align: center; font-size: 1.5rem; margin-bottom: 5px; }
-    .status-bar { text-align: center; font-weight: bold; margin-bottom: 15px; color: #555; }
-    .btn-group { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; margin-bottom: 15px; }
-    button { padding: 8px 14px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; color: white; background: #7f8c8d; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f0f4f8; margin: 0; padding: 12px; color: #333; }
+    h1 { text-align: center; font-size: 1.4rem; margin: 0 0 4px 0; }
+    .status-bar { text-align: center; font-size: 0.85rem; font-weight: bold; margin-bottom: 10px; color: #555; }
+    
+    .btn-group { display: flex; justify-content: center; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+    button { padding: 7px 12px; border: none; border-radius: 6px; font-weight: bold; font-size: 0.85rem; cursor: pointer; color: white; background: #7f8c8d; transition: 0.2s; }
+    button:hover { opacity: 0.9; }
     button#btn-connect { background: #3498db; }
-    button#btn-record.recording { background: #e74c3c; }
     button#btn-record { background: #2ecc71; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 15px; }
-    .card { background: white; padding: 12px; border-radius: 8px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    .card-title { font-size: 0.8rem; color: #7f8c8d; margin-bottom: 4px; }
-    .val-main { font-size: 1.6rem; font-weight: bold; color: #2c3e50; }
-    .val-sub { font-size: 0.75rem; color: #7f8c8d; margin-top: 4px; }
-    .chart-container { background: white; padding: 10px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    button#btn-record.recording { background: #e74c3c; animation: pulse 1.5s infinite; }
+    button#btn-csv { background: #1abc9c; }
+    button#btn-logs { background: #e67e22; }
+    button#btn-sleep { background: #9b59b6; }
+    button#btn-reset { background: #95a5a6; }
+
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
+
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 12px; }
+    .card { background: white; padding: 10px; border-radius: 8px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+    .card-title { font-size: 0.75rem; color: #7f8c8d; margin-bottom: 2px; }
+    .val-main { font-size: 1.5rem; font-weight: bold; color: #2c3e50; line-height: 1.2; }
+    .val-sub { font-size: 0.7rem; color: #7f8c8d; margin-top: 2px; }
+
+    .chart-container { background: white; padding: 8px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); position: relative; height: 350px; }
   </style>
 </head>
 <body>
@@ -30,13 +40,17 @@
   <div class="btn-group">
     <button id="btn-connect" onclick="connectBLE()">BLE 接続開始</button>
     <button id="btn-record" onclick="toggleRecord()">▶ 記録開始</button>
+    <button id="btn-csv" onclick="exportCSV()">💾 CSV共有</button>
+    <button id="btn-logs" onclick="showLogs()">📁 過去ログ</button>
+    <button id="btn-sleep" onclick="sendSleep()">💤 休眠</button>
+    <button id="btn-reset" onclick="resetData()">🔄 リセット</button>
   </div>
 
   <div class="grid">
     <div class="card">
       <div class="card-title">種目 & ヘッドスピード</div>
       <div id="shot-type" class="val-sub" style="font-weight:bold; color:#e74c3c;">-</div>
-      <div class="val-main"><span id="speed-val">0.0</span> <span style="font-size:0.9rem;">km/h</span></div>
+      <div class="val-main"><span id="speed-val">0.0</span> <span style="font-size:0.8rem;">km/h</span></div>
       <div class="val-sub">MAX: <span id="speed-max">0.0</span> | AVE: <span id="speed-ave">0.0</span></div>
     </div>
     <div class="card">
@@ -46,7 +60,7 @@
     </div>
     <div class="card">
       <div class="card-title">打球内訳 (全 <span id="total-count">0</span> 打)</div>
-      <div class="val-sub" style="margin-top:10px;">
+      <div class="val-sub" style="margin-top:6px; font-weight:bold;">
         F:<span id="count-f">0</span> B:<span id="count-b">0</span> S:<span id="count-s">0</span> Sm:<span id="count-sm">0</span>
       </div>
     </div>
@@ -58,18 +72,18 @@
   </div>
 
   <div class="chart-container">
-    <canvas id="myChart" height="120"></canvas>
+    <canvas id="myChart"></canvas>
   </div>
 
   <script>
     let bleDevice = null;
     let gattServer = null;
+    let cmdChar = null;
     let isRecording = false;
     let sessionShots = [];
     let autoReconnectTimer = null;
     let chartInstance = null;
 
-    // Chart.js の初期化
     window.onload = () => {
       const ctx = document.getElementById('myChart').getContext('2d');
       chartInstance = new Chart(ctx, {
@@ -77,21 +91,21 @@
         data: {
           labels: [],
           datasets: [
-            { label: 'Speed (km/h)', data: [], borderColor: '#e74c3c', yAxisID: 'y' },
-            { label: 'Spin (rpm)', data: [], borderColor: '#2ecc71', yAxisID: 'y1' }
+            { label: 'Speed (km/h)', data: [], borderColor: '#e74c3c', backgroundColor: 'rgba(231, 76, 60, 0.1)', yAxisID: 'y', tension: 0.2 },
+            { label: 'Spin (rpm)', data: [], borderColor: '#2ecc71', backgroundColor: 'rgba(46, 204, 113, 0.1)', yAxisID: 'y1', tension: 0.2 }
           ]
         },
         options: {
           responsive: true,
+          maintainAspectRatio: false,
           scales: {
-            y: { type: 'linear', position: 'left', min: 0, max: 160 },
-            y1: { type: 'linear', position: 'right', min: 0, max: 3500, grid: { drawOnChartArea: false } }
+            y: { type: 'linear', position: 'left', min: 0, max: 160, title: { display: true, text: 'km/h' } },
+            y1: { type: 'linear', position: 'right', min: 0, max: 3500, grid: { drawOnChartArea: false }, title: { display: true, text: 'rpm' } }
           }
         }
       });
     };
 
-    // BLE接続開始
     async function connectBLE() {
       try {
         bleDevice = await navigator.bluetooth.requestDevice({
@@ -109,7 +123,6 @@
       }
     }
 
-    // GATT接続確立
     async function startGattConnection() {
       if (!bleDevice) return;
       document.getElementById('status-text').textContent = "接続中...";
@@ -118,6 +131,8 @@
 
       const tennisService = await gattServer.getPrimaryService('19b10000-e8f2-537e-4f6c-d104768a1214');
       const dataChar = await tennisService.getCharacteristic('19b10001-e8f2-537e-4f6c-d104768a1214');
+      cmdChar = await tennisService.getCharacteristic('19b10002-e8f2-537e-4f6c-d104768a1214');
+
       await dataChar.startNotifications();
       dataChar.addEventListener('characteristicvaluechanged', handleData);
 
@@ -132,7 +147,6 @@
       if (autoReconnectTimer) clearInterval(autoReconnectTimer);
     }
 
-    // 自動再接続処理
     function onDisconnected() {
       document.getElementById('status-text').textContent = "⚠️ 切断中：自動再接続を試みています...";
       if (autoReconnectTimer) clearInterval(autoReconnectTimer);
@@ -143,7 +157,6 @@
       }, 3000);
     }
 
-    // テニスデータ受信処理
     function handleData(event) {
       const dataView = new DataView(event.target.value.buffer);
       const accelMag = dataView.getFloat32(0, true);
@@ -157,7 +170,7 @@
       else if (gx < -100) shotType = "BACKHAND";
       else if (accelMag > 5.0 && gz > 100) shotType = "SMASH";
 
-      const shotData = { speed: speed, spin: spin, type: shotType };
+      const shotData = { speed: speed, spin: spin, type: shotType, time: new Date().toLocaleTimeString() };
 
       document.getElementById('shot-type').textContent = shotType;
       document.getElementById('speed-val').textContent = speed.toFixed(1);
@@ -167,8 +180,7 @@
         sessionShots.push(shotData);
         calculateSessionStats();
 
-        // グラフ更新
-        const timeLabel = new Date().toLocaleTimeString().slice(3, 8);
+        const timeLabel = shotData.time.slice(3, 8);
         chartInstance.data.labels.push(timeLabel);
         chartInstance.data.datasets[0].data.push(speed.toFixed(1));
         chartInstance.data.datasets[1].data.push(Math.round(spin));
@@ -176,7 +188,6 @@
       }
     }
 
-    // バッテリーデータ受信処理
     function handleBatteryData(event) {
       const mv = event.target.value.getUint16(0, true);
       let pct = Math.round(((mv - 3300) / (4200 - 3300)) * 100);
@@ -186,7 +197,6 @@
       document.getElementById('batt-pct').textContent = pct + "%";
     }
 
-    // セッション統計計算 (MAX / AVE / 打球内訳)
     function calculateSessionStats() {
       if (sessionShots.length === 0) return;
 
@@ -214,7 +224,6 @@
       document.getElementById('total-count').textContent = sessionShots.length;
     }
 
-    // 記録状態切り替え
     function toggleRecord() {
       isRecording = !isRecording;
       const btn = document.getElementById('btn-record');
@@ -229,7 +238,69 @@
       } else {
         btn.textContent = "▶ 記録開始";
         btn.classList.remove("recording");
+        // ローカルストレージに過去ログとして保存
+        if (sessionShots.length > 0) {
+          const logs = JSON.parse(localStorage.getItem('tennis_logs') || '[]');
+          logs.unshift({ date: new Date().toLocaleString(), count: sessionShots.length, data: sessionShots });
+          localStorage.setItem('tennis_logs', JSON.stringify(logs.slice(0, 20))); // 直近20件保存
+        }
       }
+    }
+
+    // CSVエクスポート
+    function exportCSV() {
+      if (sessionShots.length === 0) { alert("記録データがありません。"); return; }
+      let csv = "Time,Type,Speed(km/h),Spin(RPM)\n";
+      sessionShots.forEach(s => {
+        csv += `${s.time},${s.type},${s.speed.toFixed(1)},${Math.round(s.spin)}\n`;
+      });
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `tennis_log_${new Date().toISOString().slice(0,10)}.csv`;
+      a.click();
+    }
+
+    // 過去ログ表示
+    function showLogs() {
+      const logs = JSON.parse(localStorage.getItem('tennis_logs') || '[]');
+      if (logs.length === 0) { alert("保存された過去ログはありません。"); return; }
+      let msg = "【過去ログ一覧】\n";
+      logs.forEach((l, i) => {
+        msg += `${i+1}. ${l.date} (${l.count}打)\n`;
+      });
+      alert(msg);
+    }
+
+    // 休眠コマンド送信
+    async function sendSleep() {
+      if (cmdChar) {
+        await cmdChar.writeValue(new Uint8Array([0x01]));
+        alert("休眠コマンドを送信しました。外部リセットボタンで復帰させてください。");
+      } else {
+        alert("BLE接続されていません。");
+      }
+    }
+
+    // 表示リセット
+    function resetData() {
+      sessionShots = [];
+      document.getElementById('speed-val').textContent = "0.0";
+      document.getElementById('speed-max').textContent = "0.0";
+      document.getElementById('speed-ave').textContent = "0.0";
+      document.getElementById('spin-val').textContent = "0";
+      document.getElementById('spin-max').textContent = "0";
+      document.getElementById('spin-ave').textContent = "0";
+      document.getElementById('count-f').textContent = "0";
+      document.getElementById('count-b').textContent = "0";
+      document.getElementById('count-s').textContent = "0";
+      document.getElementById('count-sm').textContent = "0";
+      document.getElementById('total-count').textContent = "0";
+      chartInstance.data.labels = [];
+      chartInstance.data.datasets[0].data = [];
+      chartInstance.data.datasets[1].data = [];
+      chartInstance.update();
     }
   </script>
 </body>
