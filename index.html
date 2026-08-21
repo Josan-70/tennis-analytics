@@ -11,7 +11,7 @@
     .status-bar { text-align: center; font-size: 0.85rem; font-weight: bold; margin-bottom: 10px; color: #555; }
     
     .btn-group { display: flex; justify-content: center; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
-    button { padding: 7px 12px; border: none; border-radius: 6px; font-weight: bold; font-size: 0.85rem; cursor: pointer; color: white; background: #7f8c8d; transition: 0.2s; }
+    button { padding: 8px 12px; border: none; border-radius: 6px; font-weight: bold; font-size: 0.85rem; cursor: pointer; color: white; background: #7f8c8d; transition: 0.2s; }
     button:hover { opacity: 0.9; }
     button#btn-connect { background: #3498db; }
     button#btn-record { background: #2ecc71; }
@@ -30,6 +30,17 @@
     .val-sub { font-size: 0.7rem; color: #7f8c8d; margin-top: 2px; }
 
     .chart-container { background: white; padding: 8px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); position: relative; height: 350px; }
+
+    /* モーダルUI (iPhoneタッチ対応) */
+    .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; }
+    .modal-content { background: white; border-radius: 12px; width: 90%; max-width: 400px; max-height: 80vh; overflow-y: auto; padding: 16px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+    .modal-title { font-size: 1.1rem; font-weight: bold; margin-bottom: 12px; text-align: center; color: #2c3e50; }
+    .log-item { background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 8px; padding: 12px; margin-bottom: 8px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: 0.2s; }
+    .log-item:active { background: #e2e6ea; }
+    .log-info { font-size: 0.85rem; }
+    .log-date { font-weight: bold; color: #333; }
+    .log-count { color: #e67e22; font-size: 0.8rem; }
+    .modal-close-btn { width: 100%; padding: 10px; background: #7f8c8d; border: none; border-radius: 8px; color: white; font-weight: bold; margin-top: 8px; }
   </style>
 </head>
 <body>
@@ -75,13 +86,22 @@
     <canvas id="myChart"></canvas>
   </div>
 
+  <!-- タッチ対応 過去ログモーダル -->
+  <div id="log-modal" class="modal-overlay">
+    <div class="modal-content">
+      <div class="modal-title">📁 過去ログ選択</div>
+      <div id="log-list"></div>
+      <button class="modal-close-btn" onclick="closeLogs()">閉じる</button>
+    </div>
+  </div>
+
   <script>
     let bleDevice = null;
     let gattServer = null;
     let cmdChar = null;
     let isRecording = false;
-    let currentShots = []; // 現在の計測/復元データ
-    let lastRecordedShots = []; // 直近の記録保存用
+    let currentShots = [];
+    let lastRecordedShots = [];
     let autoReconnectTimer = null;
     let chartInstance = null;
 
@@ -245,7 +265,6 @@
       }
     }
 
-    // CSVエクスポート（記録中・過去ログ閲覧中どちらでも動作）
     function exportCSV() {
       const targetData = (currentShots.length > 0) ? currentShots : lastRecordedShots;
       if (!targetData || targetData.length === 0) { 
@@ -264,49 +283,61 @@
       a.click();
     }
 
-    // 過去ログ選択・グラフ復元処理
+    // タッチ対応の過去ログモーダル表示
     function showLogs() {
       const logs = JSON.parse(localStorage.getItem('tennis_logs') || '[]');
       if (logs.length === 0) { alert("保存された過去ログはありません。"); return; }
-      
-      let msg = "【過去ログ一覧】表示したい番号を入力してください:\n\n";
-      logs.forEach((l, i) => {
-        msg += `${i+1}. ${l.date} (${l.count}打)\n`;
+
+      const logListContainer = document.getElementById('log-list');
+      logListContainer.innerHTML = '';
+
+      logs.forEach((log, index) => {
+        const item = document.createElement('div');
+        item.className = 'log-item';
+        item.innerHTML = `
+          <div class="log-info">
+            <div class="log-date">${log.date}</div>
+            <div class="log-count">打球数: ${log.count} 打</div>
+          </div>
+          <span style="font-size:1.2rem; color:#3498db;">➔</span>
+        `;
+        item.onclick = () => selectLog(index);
+        logListContainer.appendChild(item);
       });
 
-      const selected = prompt(msg);
-      if (selected) {
-        const index = parseInt(selected, 10) - 1;
-        if (index >= 0 && index < logs.length) {
-          const log = logs[index];
-          currentShots = log.data;
-          lastRecordedShots = log.data;
-          
-          // グラフ描画
-          chartInstance.data.labels = log.data.map(s => s.time.slice(3, 8));
-          chartInstance.data.datasets[0].data = log.data.map(s => s.speed.toFixed(1));
-          chartInstance.data.datasets[1].data = log.data.map(s => Math.round(s.spin));
-          chartInstance.update();
+      document.getElementById('log-modal').style.display = 'flex';
+    }
 
-          calculateStats(log.data);
-          alert(`ログ「${log.date}」を読み込みました。CSV共有も可能です。`);
-        } else {
-          alert("無効な番号です。");
-        }
+    function selectLog(index) {
+      const logs = JSON.parse(localStorage.getItem('tennis_logs') || '[]');
+      const log = logs[index];
+      if (log) {
+        currentShots = log.data;
+        lastRecordedShots = log.data;
+
+        chartInstance.data.labels = log.data.map(s => s.time.slice(3, 8));
+        chartInstance.data.datasets[0].data = log.data.map(s => s.speed.toFixed(1));
+        chartInstance.data.datasets[1].data = log.data.map(s => Math.round(s.spin));
+        chartInstance.update();
+
+        calculateStats(log.data);
+        closeLogs();
       }
     }
 
-    // 休眠コマンド送信
+    function closeLogs() {
+      document.getElementById('log-modal').style.display = 'none';
+    }
+
     async function sendSleep() {
       if (cmdChar && bleDevice && bleDevice.gatt.connected) {
         await cmdChar.writeValue(new Uint8Array([0x01]));
-        alert("XIAOを休眠状態に移行させました。復帰させる際は本体のリセットボタンを押してください。");
+        alert("XIAOを休眠状態に移行させました。復帰させる際はUSBの抜き差しを行ってください。");
       } else {
         alert("BLE接続されていません。接続してから実行してください。");
       }
     }
 
-    // リセット
     function resetData() {
       currentShots = [];
       document.getElementById('speed-val').textContent = "0.0";
