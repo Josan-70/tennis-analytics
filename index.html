@@ -80,7 +80,8 @@
     let gattServer = null;
     let cmdChar = null;
     let isRecording = false;
-    let sessionShots = [];
+    let currentShots = []; // 現在の計測/復元データ
+    let lastRecordedShots = []; // 直近の記録保存用
     let autoReconnectTimer = null;
     let chartInstance = null;
 
@@ -148,13 +149,8 @@
     }
 
     function onDisconnected() {
-      document.getElementById('status-text').textContent = "⚠️ 切断中：自動再接続を試みています...";
+      document.getElementById('status-text').textContent = "⚠️ 切断中（または休眠状態）";
       if (autoReconnectTimer) clearInterval(autoReconnectTimer);
-      autoReconnectTimer = setInterval(async () => {
-        if (bleDevice && !bleDevice.gatt.connected) {
-          try { await startGattConnection(); } catch (e) {}
-        }
-      }, 3000);
     }
 
     function handleData(event) {
@@ -177,8 +173,9 @@
       document.getElementById('spin-val').textContent = Math.round(spin);
 
       if (isRecording) {
-        sessionShots.push(shotData);
-        calculateSessionStats();
+        currentShots.push(shotData);
+        lastRecordedShots = currentShots;
+        calculateStats(currentShots);
 
         const timeLabel = shotData.time.slice(3, 8);
         chartInstance.data.labels.push(timeLabel);
@@ -197,14 +194,14 @@
       document.getElementById('batt-pct').textContent = pct + "%";
     }
 
-    function calculateSessionStats() {
-      if (sessionShots.length === 0) return;
+    function calculateStats(shots) {
+      if (!shots || shots.length === 0) return;
 
       let maxSpeed = 0, sumSpeed = 0;
       let maxSpin = 0, sumSpin = 0;
       let counts = { FOREHAND: 0, BACKHAND: 0, SERVE: 0, SMASH: 0 };
 
-      sessionShots.forEach(s => {
+      shots.forEach(s => {
         if (s.speed > maxSpeed) maxSpeed = s.speed;
         sumSpeed += s.speed;
         if (s.spin > maxSpin) maxSpin = s.spin;
@@ -213,15 +210,15 @@
       });
 
       document.getElementById('speed-max').textContent = maxSpeed.toFixed(1);
-      document.getElementById('speed-ave').textContent = (sumSpeed / sessionShots.length).toFixed(1);
+      document.getElementById('speed-ave').textContent = (sumSpeed / shots.length).toFixed(1);
       document.getElementById('spin-max').textContent = Math.round(maxSpin);
-      document.getElementById('spin-ave').textContent = Math.round(sumSpin / sessionShots.length);
+      document.getElementById('spin-ave').textContent = Math.round(sumSpin / shots.length);
 
       document.getElementById('count-f').textContent = counts.FOREHAND;
       document.getElementById('count-b').textContent = counts.BACKHAND;
       document.getElementById('count-s').textContent = counts.SERVE;
       document.getElementById('count-sm').textContent = counts.SMASH;
-      document.getElementById('total-count').textContent = sessionShots.length;
+      document.getElementById('total-count').textContent = shots.length;
     }
 
     function toggleRecord() {
@@ -230,7 +227,7 @@
       if (isRecording) {
         btn.textContent = "■ 記録終了";
         btn.classList.add("recording");
-        sessionShots = [];
+        currentShots = [];
         chartInstance.data.labels = [];
         chartInstance.data.datasets[0].data = [];
         chartInstance.data.datasets[1].data = [];
@@ -238,20 +235,25 @@
       } else {
         btn.textContent = "▶ 記録開始";
         btn.classList.remove("recording");
-        // ローカルストレージに過去ログとして保存
-        if (sessionShots.length > 0) {
+        if (currentShots.length > 0) {
+          lastRecordedShots = [...currentShots];
           const logs = JSON.parse(localStorage.getItem('tennis_logs') || '[]');
-          logs.unshift({ date: new Date().toLocaleString(), count: sessionShots.length, data: sessionShots });
-          localStorage.setItem('tennis_logs', JSON.stringify(logs.slice(0, 20))); // 直近20件保存
+          logs.unshift({ date: new Date().toLocaleString(), count: currentShots.length, data: currentShots });
+          localStorage.setItem('tennis_logs', JSON.stringify(logs.slice(0, 20)));
+          alert(`記録を保存しました（全 ${currentShots.length} 打）。「CSV共有」で保存できます。`);
         }
       }
     }
 
-    // CSVエクスポート
+    // CSVエクスポート（記録中・過去ログ閲覧中どちらでも動作）
     function exportCSV() {
-      if (sessionShots.length === 0) { alert("記録データがありません。"); return; }
+      const targetData = (currentShots.length > 0) ? currentShots : lastRecordedShots;
+      if (!targetData || targetData.length === 0) { 
+        alert("保存対象の打球データがありません。「▶ 記録開始」を押して打ち終えてから押してください。"); 
+        return; 
+      }
       let csv = "Time,Type,Speed(km/h),Spin(RPM)\n";
-      sessionShots.forEach(s => {
+      targetData.forEach(s => {
         csv += `${s.time},${s.type},${s.speed.toFixed(1)},${Math.round(s.spin)}\n`;
       });
       const blob = new Blob([csv], { type: 'text/csv' });
@@ -262,30 +264,51 @@
       a.click();
     }
 
-    // 過去ログ表示
+    // 過去ログ選択・グラフ復元処理
     function showLogs() {
       const logs = JSON.parse(localStorage.getItem('tennis_logs') || '[]');
       if (logs.length === 0) { alert("保存された過去ログはありません。"); return; }
-      let msg = "【過去ログ一覧】\n";
+      
+      let msg = "【過去ログ一覧】表示したい番号を入力してください:\n\n";
       logs.forEach((l, i) => {
         msg += `${i+1}. ${l.date} (${l.count}打)\n`;
       });
-      alert(msg);
+
+      const selected = prompt(msg);
+      if (selected) {
+        const index = parseInt(selected, 10) - 1;
+        if (index >= 0 && index < logs.length) {
+          const log = logs[index];
+          currentShots = log.data;
+          lastRecordedShots = log.data;
+          
+          // グラフ描画
+          chartInstance.data.labels = log.data.map(s => s.time.slice(3, 8));
+          chartInstance.data.datasets[0].data = log.data.map(s => s.speed.toFixed(1));
+          chartInstance.data.datasets[1].data = log.data.map(s => Math.round(s.spin));
+          chartInstance.update();
+
+          calculateStats(log.data);
+          alert(`ログ「${log.date}」を読み込みました。CSV共有も可能です。`);
+        } else {
+          alert("無効な番号です。");
+        }
+      }
     }
 
     // 休眠コマンド送信
     async function sendSleep() {
-      if (cmdChar) {
+      if (cmdChar && bleDevice && bleDevice.gatt.connected) {
         await cmdChar.writeValue(new Uint8Array([0x01]));
-        alert("休眠コマンドを送信しました。外部リセットボタンで復帰させてください。");
+        alert("XIAOを休眠状態に移行させました。復帰させる際は本体のリセットボタンを押してください。");
       } else {
-        alert("BLE接続されていません。");
+        alert("BLE接続されていません。接続してから実行してください。");
       }
     }
 
-    // 表示リセット
+    // リセット
     function resetData() {
-      sessionShots = [];
+      currentShots = [];
       document.getElementById('speed-val').textContent = "0.0";
       document.getElementById('speed-max').textContent = "0.0";
       document.getElementById('speed-ave').textContent = "0.0";
