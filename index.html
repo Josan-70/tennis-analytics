@@ -265,25 +265,47 @@
       }
     }
 
-    function exportCSV() {
+    // iPhone / PC 双方に対応した CSV エクスポート・共有処理
+    async function exportCSV() {
       const targetData = (currentShots.length > 0) ? currentShots : lastRecordedShots;
       if (!targetData || targetData.length === 0) { 
         alert("保存対象の打球データがありません。「▶ 記録開始」を押して打ち終えてから押してください。"); 
         return; 
       }
+      
       let csv = "Time,Type,Speed(km/h),Spin(RPM)\n";
       targetData.forEach(s => {
         csv += `${s.time},${s.type},${s.speed.toFixed(1)},${Math.round(s.spin)}\n`;
       });
-      const blob = new Blob([csv], { type: 'text/csv' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `tennis_log_${new Date().toISOString().slice(0,10)}.csv`;
-      a.click();
+
+      const fileName = `tennis_log_${new Date().toISOString().slice(0,10)}.csv`;
+      const file = new File([csv], fileName, { type: 'text/csv' });
+
+      // iPhoneなどのWeb Share API（共有メニュー）対応環境の場合
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: 'テニスデータログ',
+            text: '打球計測データCSVファイル'
+          });
+        } catch (err) {
+          if (err.name !== 'AbortError') {
+            alert("共有に失敗しました: " + err.message);
+          }
+        }
+      } else {
+        // PCなどの通常のブラウザ用フォールバック
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
     }
 
-    // タッチ対応の過去ログモーダル表示
     function showLogs() {
       const logs = JSON.parse(localStorage.getItem('tennis_logs') || '[]');
       if (logs.length === 0) { alert("保存された過去ログはありません。"); return; }
